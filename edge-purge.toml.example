@@ -1,0 +1,50 @@
+# edge-purge-sync configuration. Copy to edge-purge.toml and edit.
+# Secrets stay out of git: CF_API_TOKEN / CF_ZONE_ID env vars override these.
+
+[cloudflare]
+base_url = "https://api.cloudflare.com/client/v4"
+zone_id = ""            # or set CF_ZONE_ID
+api_token = ""          # or set CF_API_TOKEN (Token with Zone.Cache Purge)
+
+[assets]
+# Public origin/CDN base the built assets are served from.
+base_url = "https://example.com"
+# Built output scanned recursively; every file becomes a URL under url_prefix.
+dir = "dist"
+url_prefix = "/assets/"
+# sha256 | sha1 | md5 — must match how edge hashes are produced.
+hash_algorithm = "sha256"
+# Optional Vite / webpack manifest (paths resolved against dir above).
+# manifest = "dist/.vite/manifest.json"
+# Optional filters for scanned files (wildcards * and ?).
+extensions = ["js", "css", "svg", "woff2"]
+include = []
+exclude = ["**/*.map", "**/*.txt"]
+# Use the hash embedded in artifact names (app.a1b2c3d4.js) when no file is present.
+hash_from_filename = false
+# Explicit url = local-file pairs for unhashed assets (index.html, attachments).
+# [assets.files]
+# "https://example.com/index.html" = "dist/index.html"
+
+[edge]
+# body: hash the edge response body (accurate).
+# etag: compare against ETag header (cheap).
+# digest: compare against Digest / Content-Digest header.
+verify = "body"
+timeout_secs = 15
+concurrency = 8
+
+[purge]
+# url: granular per-URL Cache API purge (default).
+# tag: purge configured cache tags. everything: zone-wide purge.
+strategy = "url"
+batch_size = 30
+max_retries = 3
+retry_backoff_ms = 500
+tags = []
+
+[state]
+path = ".edge-purge-sync.state.json"
+
+[daemon]
+interval_secs = 300
