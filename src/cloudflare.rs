@@ -53,12 +53,20 @@ impl CloudflareClient {
         if cfg.cloudflare.zone_id.is_empty() {
             return Err(Error::Config("cloudflare.zone_id is empty".into()));
         }
+        let base_url = cfg.cloudflare.base_url.trim_end_matches('/').to_string();
+        let parsed = reqwest::Url::parse(&base_url)
+            .map_err(|e| Error::Config(format!("cloudflare.base_url invalid: {e}")))?;
+        if parsed.scheme() != "https" && !is_loopback_host(parsed.host_str()) {
+            return Err(Error::Config(
+                "cloudflare.base_url must use https (http allowed only for loopback)".into(),
+            ));
+        }
         Ok(Self {
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
                 .user_agent(cfg.edge.user_agent.clone())
                 .build()?,
-            base_url: cfg.cloudflare.base_url.trim_end_matches('/').to_string(),
+            base_url,
             zone_id: cfg.cloudflare.zone_id.clone(),
             token,
         })
@@ -131,7 +139,12 @@ impl CloudflareClient {
                         }
                         warn!(%status, attempt, "purge retry");
                     } else {
-                        let text = resp.text().await?;
+                        let text = resp.text().await.map_err(|e| {
+                            Error::Config(format!(
+                                "purge response read failed: {}",
+                                describe_http_error(&e)
+                            ))
+                        })?;
                         if !status.is_success() {
                             return Err(Error::CloudflareHttp {
                                 status: status.as_u16(),
@@ -153,14 +166,45 @@ impl CloudflareClient {
                 }
                 Err(err) => {
                     if attempt >= cfg.max_retries {
-                        return Err(Error::Http(err));
+                        return Err(Error::Config(format!(
+                            "purge request failed: {}",
+                            describe_http_error(&err)
+                        )));
                     }
-                    warn!(error = %err, attempt, "purge retry");
+                    warn!(error = %describe_http_error(&err), attempt, "purge retry");
                 }
             }
             attempt += 1;
             let backoff = cfg.retry_backoff_ms.saturating_mul(1u64 << attempt.min(6));
             tokio::time::sleep(Duration::from_millis(backoff)).await;
         }
+    }
+}
+
+fn is_loopback_host(host: Option<&str>) -> bool {
+    match host {
+        Some(host) => {
+            let host = host.trim_matches(|c| c == '[' || c == ']');
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false)
+        }
+        None => false,
+    }
+}
+
+fn describe_http_error(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        "request timed out"
+    } else if err.is_connect() {
+        "connection failed"
+    } else if err.is_request() {
+        "request failed"
+    } else if err.is_body() {
+        "response body error"
+    } else {
+        "transport error"
     }
 }
